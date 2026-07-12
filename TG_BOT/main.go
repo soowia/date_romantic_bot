@@ -8,43 +8,83 @@ import (
 )
 
 func main() {
-	// 1. Берем токен из переменных окружения (для безопасности)
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
 	if botToken == "" {
 		log.Fatal("Переменная окружения TELEGRAM_APITOKEN не установлена!")
 	}
 
-	// 2. Инициализируем бота
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
-		log.Panic(err) // Если токен неверный или сети нет, программа упадет с ошибкой
+		log.Panic(err)
 	}
 
-	// Включаем дебаг-режим, чтобы в консоли было видно все входящие сообщения
 	bot.Debug = true
 
 	log.Printf("Авторизовались под аккаунтом %s", bot.Self.UserName)
 
-	// 3. Настраиваем Long Polling (получение обновлений от Telegram)
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
-	// Получаем Go-канал, в который будут прилетать новые сообщения
 	updates := bot.GetUpdatesChan(u)
 
-	// 4. Бесконечный цикл обработки сообщений
 	for update := range updates {
-		// Если пришло не текстовое сообщение (а, например, пользователь удалил чат) — игнорируем
+		if update.CallbackQuery != nil {
+
+			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "")
+			if _, err := bot.Request(callback); err != nil {
+				log.Printf("Не удалось ответить на callback: %v", err)
+			}
+
+			var responseText string
+			switch update.CallbackQuery.Data {
+			case "menu_ideas":
+				responseText = "Здесь скоро будет генератор крутых идей для свиданий! Напиши, что бы вам хотелось: кино, ресторан или экстрим? 😉"
+			case "menu_remind":
+				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
+			}
+
+			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
+			bot.Send(msg)
+			continue
+		}
+		// -----------------------------------------------------
 		if update.Message == nil {
 			continue
 		}
 
 		log.Printf("[%s] написал: %s", update.Message.From.UserName, update.Message.Text)
 
-		// Создаем ответное сообщение: повторяем то, что написал пользователь
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Ты написал: "+update.Message.Text)
+		if update.Message.IsCommand() {
+			var replyText string
 
-		// Отправляем ответ обратно в Telegram
+			switch update.Message.Command() {
+			case "start":
+				replyText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, replyText)
+
+				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
+				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+
+				numericKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
+				)
+
+				msg.ReplyMarkup = numericKeyboard
+
+				bot.Send(msg)
+				continue
+			case "help":
+				replyText = "Доступные команды:\n/start - запустить бота\n/help - показать это меню"
+			default:
+				replyText = "Я не знаю такую команду 🤷‍♂️"
+			}
+
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, replyText)
+			bot.Send(msg)
+			continue
+		}
+
+		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Ты написал обычный текст: "+update.Message.Text)
 		_, err := bot.Send(msg)
 		if err != nil {
 			log.Printf("Не удалось отправить сообщение: %v", err)
