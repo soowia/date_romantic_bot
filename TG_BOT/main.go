@@ -2,10 +2,36 @@ package main
 
 import (
 	"log"
+	"math/rand"
 	"os"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+type DateIdea struct {
+	Category    string
+	Description string
+}
+
+var ideas = []DateIdea{
+	{
+		Category:    "На улице 🌳",
+		Description: "Устройте ночной пикник на крыше или в парке с гирляндами на батарейках, термосом с какао и просмотром неонового заката.",
+	},
+	{
+		Category:    "Активный отдых ⚡",
+		Description: "Сходите в современное VR-пространство или на технологичный интерактивный аттракцион, чтобы побегать в виртуальной реальности.",
+	},
+	{
+		Category:    "Дома 🏠",
+		Description: "Устройте кулинарный поединок: выберите случайный рецепт сложного десерта или коктейля, который вы оба никогда не пробовали готовить, и сделайте его вместе под виниловый вайб.",
+	},
+	{
+		Category:    "Культурная программа 🎭",
+		Description: "Посетите выставку современного цифрового искусства (медиа-арт) или галерею с уникальными неоновыми инсталляциями.",
+	},
+}
 
 func main() {
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
@@ -38,7 +64,15 @@ func main() {
 			var responseText string
 			switch update.CallbackQuery.Data {
 			case "menu_ideas":
-				responseText = "Здесь скоро будет генератор крутых идей для свиданий! Напиши, что бы вам хотелось: кино, ресторан или экстрим? 😉"
+				rand.Seed(time.Now().UnixNano())
+
+				randomIndex := rand.Intn(len(ideas))
+				randomIdea := ideas[randomIndex]
+
+				// Формируем красивый текст ответа с использованием эмодзи и переходов
+				responseText = "✨ **Идея для вашего свидания!** ✨\n\n" +
+					"**Категория:** " + randomIdea.Category + "\n" +
+					"**Что делаем:** " + randomIdea.Description
 			case "menu_remind":
 				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
 			}
