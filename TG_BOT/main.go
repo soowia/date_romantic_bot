@@ -31,6 +31,18 @@ var ideas = []DateIdea{
 		Category:    "Культурная программа 🎭",
 		Description: "Посетите выставку современного цифрового искусства (медиа-арт) или галерею с уникальными неоновыми инсталляциями.",
 	},
+	{
+		Category:    "На улице",
+		Description: "Посетить альпака парк в сокольниках",
+	},
+	{
+		Category:    "Активный отдых",
+		Description: "Веломаршрут Зелёное кольцо, либо просто покататься на велосипеде",
+	},
+	{
+		Category:    "На улице",
+		Description: "Кинотеатр под открытым небом",
+	},
 }
 
 func main() {
@@ -69,10 +81,9 @@ func main() {
 				randomIndex := rand.Intn(len(ideas))
 				randomIdea := ideas[randomIndex]
 
-				// Формируем красивый текст ответа с использованием эмодзи и переходов
 				responseText = "✨ **Идея для вашего свидания!** ✨\n\n" +
-					"**Категория:** " + randomIdea.Category + "\n" +
-					"**Что делаем:** " + randomIdea.Description
+					"Категория: " + randomIdea.Category + "\n" +
+					"Что делаем:" + randomIdea.Description
 			case "menu_remind":
 				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
 			}
@@ -81,7 +92,6 @@ func main() {
 			bot.Send(msg)
 			continue
 		}
-		// -----------------------------------------------------
 		if update.Message == nil {
 			continue
 		}
