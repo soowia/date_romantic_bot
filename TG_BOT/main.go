@@ -2,50 +2,57 @@ package main
 
 import (
 	"log"
-	"math/rand"
 	"os"
-	"time"
 
+	"github.com/glebarez/sqlite"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"gorm.io/gorm"
 )
 
 type DateIdea struct {
+	gorm.Model
 	Category    string
 	Description string
 }
 
-var ideas = []DateIdea{
-	{
-		Category:    "На улице 🌳",
-		Description: "Устройте ночной пикник на крыше или в парке с гирляндами на батарейках, термосом с какао и просмотром неонового заката.",
-	},
-	{
-		Category:    "Активный отдых ⚡",
-		Description: "Сходите в современное VR-пространство или на технологичный интерактивный аттракцион, чтобы побегать в виртуальной реальности.",
-	},
-	{
-		Category:    "Дома 🏠",
-		Description: "Устройте кулинарный поединок: выберите случайный рецепт сложного десерта или коктейля, который вы оба никогда не пробовали готовить, и сделайте его вместе под виниловый вайб.",
-	},
-	{
-		Category:    "Культурная программа 🎭",
-		Description: "Посетите выставку современного цифрового искусства (медиа-арт) или галерею с уникальными неоновыми инсталляциями.",
-	},
-	{
-		Category:    "На улице",
-		Description: "Посетить альпака парк в сокольниках",
-	},
-	{
-		Category:    "Активный отдых",
-		Description: "Веломаршрут Зелёное кольцо, либо просто покататься на велосипеде",
-	},
-	{
-		Category:    "На улице",
-		Description: "Кинотеатр под открытым небом",
-	},
+var DB *gorm.DB
+
+func initDB() {
+	var err error
+
+	DB, err = gorm.Open(sqlite.Open("bot.db"), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Не удалось подключиться к базе данных: %v", err)
+	}
+
+	err = DB.AutoMigrate(&DateIdea{})
+	if err != nil {
+		log.Fatalf("Ошибка миграции БД: %v", err)
+	}
+
+	log.Println("База данных успешно инициализирована!")
+
+	// Если база данных пустая, наполняем её всеми твоими классными идеями!
+	var count int64
+	DB.Model(&DateIdea{}).Count(&count)
+	if count == 0 {
+		initialIdeas := []DateIdea{
+			{Category: "На улице 🌳", Description: "Устройте ночной пикник на крыше или в парке с гирляндами на батарейках, термосом с какао и просмотром неонового заката."},
+			{Category: "Активный отдых ⚡", Description: "Сходите в современное VR-пространство или на технологичный интерактивный аттракцион, чтобы побегать в виртуальной реальности."},
+			{Category: "Дома 🏠", Description: "Устройте кулинарный поединок: выберите случайный рецепт сложного десерта или коктейля, который вы оба никогда не пробовали готовить, и сделайте его вместе под виниловый вайб."},
+			{Category: "Культурная программа 🎭", Description: "Посетите выставку современного цифрового искусства (медиа-арт) или галерею с уникальными неоновыми инсталляциями."},
+			{Category: "На улице 🌳", Description: "Посетить альпака парк в сокольниках"},
+			{Category: "Активный отдых ⚡", Description: "Веломаршрут Зелёное кольцо, либо просто покататься на велосипеде"},
+			{Category: "На улице 🌳", Description: "Кинотеатр под открытым небом"},
+		}
+		DB.Create(&initialIdeas)
+		log.Println("База данных была пуста, успешно добавили стартовые идеи!")
+	}
 }
 
 func main() {
+	initDB()
+
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
 	if botToken == "" {
 		log.Fatal("Переменная окружения TELEGRAM_APITOKEN не установлена!")
@@ -72,9 +79,8 @@ func main() {
 		log.Printf("Не удалось установить меню команд: %v", err)
 	}
 	log.Println("Нижнее меню команд успешно настроено!")
-	// ------------------------------------------
-	bot.Debug = true
 
+	bot.Debug = true
 	log.Printf("Авторизовались под аккаунтом %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
@@ -84,7 +90,6 @@ func main() {
 
 	for update := range updates {
 		if update.CallbackQuery != nil {
-
 			callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "")
 			if _, err := bot.Request(callback); err != nil {
 				log.Printf("Не удалось ответить на callback: %v", err)
@@ -93,13 +98,18 @@ func main() {
 			var responseText string
 			switch update.CallbackQuery.Data {
 			case "menu_ideas", "next_idea":
-				rand.Seed(time.Now().UnixNano())
-				randomIndex := rand.Intn(len(ideas))
-				randomIdea := ideas[randomIndex]
+				var randomIdea DateIdea
 
-				responseText = "✨ **Идея для вашего свидания!** ✨\n\n" +
-					"**Категория:** " + randomIdea.Category + "\n" +
-					"**Что делаем:** " + randomIdea.Description
+				result := DB.Order("RANDOM()").First(&randomIdea)
+
+				if result.Error != nil {
+					log.Printf("Ошибка при получении идеи из БД: %v", result.Error)
+					responseText = "Ой, не удалось получить идею из базы данных. Попробуйте еще раз! 😢"
+				} else {
+					responseText = "✨ **Идея для вашего свидания!** ✨\n\n" +
+						"**Категория:** " + randomIdea.Category + "\n" +
+						"**Что делаем:** " + randomIdea.Description
+				}
 
 				btnNext := tgbotapi.NewInlineKeyboardButtonData("👉 Другая идея", "next_idea")
 				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
@@ -114,18 +124,20 @@ func main() {
 					responseText,
 					inlineKeyboard,
 				)
+
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
+				continue // Переходим к следующему апдейту, не отправляя лишний текст
 
 			case "menu_remind":
 				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
 				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
 				bot.Send(msg)
+				continue
 
 			case "go_to_main":
 				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
 
-				// Пересоздаем стартовые кнопки
 				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
 				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
 
@@ -133,27 +145,22 @@ func main() {
 					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
 				)
 
-				// Создаем объект редактирования текста И разметки (клавиатуры)
 				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
 					update.CallbackQuery.Message.Chat.ID,
 					update.CallbackQuery.Message.MessageID,
 					responseText,
-					mainKeyboard, // Передаем клавиатуру сюда
+					mainKeyboard,
 				)
 
 				editMsg.ParseMode = "Markdown"
 
-				// Отправляем изменения в Telegram
 				if _, err := bot.Send(editMsg); err != nil {
 					log.Printf("Ошибка при возврате в меню: %v", err)
 				}
 				continue
 			}
-
-			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
-			bot.Send(msg)
-			continue
 		}
+
 		if update.Message == nil {
 			continue
 		}
@@ -176,7 +183,6 @@ func main() {
 				)
 
 				msg.ReplyMarkup = numericKeyboard
-
 				bot.Send(msg)
 				continue
 			case "help":
@@ -191,8 +197,7 @@ func main() {
 		}
 
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Ты написал обычный текст: "+update.Message.Text)
-		_, err := bot.Send(msg)
-		if err != nil {
+		if _, err := bot.Send(msg); err != nil {
 			log.Printf("Не удалось отправить сообщение: %v", err)
 		}
 	}
