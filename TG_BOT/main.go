@@ -56,6 +56,23 @@ func main() {
 		log.Panic(err)
 	}
 
+	commands := []tgbotapi.BotCommand{
+		{
+			Command:     "start",
+			Description: "Запустить бота и открыть главное меню",
+		},
+		{
+			Command:     "help",
+			Description: "Показать справку по командам",
+		},
+	}
+
+	setCommandsConfig := tgbotapi.NewSetMyCommands(commands...)
+	if _, err := bot.Request(setCommandsConfig); err != nil {
+		log.Printf("Не удалось установить меню команд: %v", err)
+	}
+	log.Println("Нижнее меню команд успешно настроено!")
+	// ------------------------------------------
 	bot.Debug = true
 
 	log.Printf("Авторизовались под аккаунтом %s", bot.Self.UserName)
@@ -75,17 +92,62 @@ func main() {
 
 			var responseText string
 			switch update.CallbackQuery.Data {
-			case "menu_ideas":
+			case "menu_ideas", "next_idea":
 				rand.Seed(time.Now().UnixNano())
-
 				randomIndex := rand.Intn(len(ideas))
 				randomIdea := ideas[randomIndex]
 
 				responseText = "✨ **Идея для вашего свидания!** ✨\n\n" +
-					"Категория: " + randomIdea.Category + "\n" +
-					"Что делаем:" + randomIdea.Description
+					"**Категория:** " + randomIdea.Category + "\n" +
+					"**Что делаем:** " + randomIdea.Description
+
+				btnNext := tgbotapi.NewInlineKeyboardButtonData("👉 Другая идея", "next_idea")
+				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
+
+				inlineKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(btnNext, btnBack),
+				)
+
+				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
+					update.CallbackQuery.Message.Chat.ID,
+					update.CallbackQuery.Message.MessageID,
+					responseText,
+					inlineKeyboard,
+				)
+				editMsg.ParseMode = "Markdown"
+				bot.Send(editMsg)
+
 			case "menu_remind":
 				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
+				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
+				bot.Send(msg)
+
+			case "go_to_main":
+				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
+
+				// Пересоздаем стартовые кнопки
+				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
+				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+
+				mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
+				)
+
+				// Создаем объект редактирования текста И разметки (клавиатуры)
+				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
+					update.CallbackQuery.Message.Chat.ID,
+					update.CallbackQuery.Message.MessageID,
+					responseText,
+					mainKeyboard, // Передаем клавиатуру сюда
+				)
+
+				editMsg.ParseMode = "Markdown"
+
+				// Отправляем изменения в Telegram
+				if _, err := bot.Send(editMsg); err != nil {
+					log.Printf("Ошибка при возврате в меню: %v", err)
+				}
+				continue
 			}
 
 			msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
