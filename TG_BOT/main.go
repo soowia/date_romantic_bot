@@ -1,13 +1,79 @@
 package main
 
 import (
+	"html/template"
 	"log"
+	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/glebarez/sqlite"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gorm.io/gorm"
 )
+
+const adminHTML = `
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель управления Date Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans leading-normal tracking-normal">
+    <div class="container mx-auto px-4 py-8 max-w-2xl">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6 text-center">💖 Админка Date Bot</h1>
+        
+        <!-- Форма добавления -->
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Добавить новую идею</h2>
+            <form action="/admin/add" method="POST" class="space-y-4">
+                <div>
+                    <label class="block text-gray-600 text-sm font-semibold mb-1">Категория</label>
+                    <input type="text" name="category" placeholder="Например: Дома 🏠" required 
+                           class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-pink-500">
+                </div>
+                <div>
+                    <label class="block text-gray-600 text-sm font-semibold mb-1">Что делать</label>
+                    <textarea name="description" placeholder="Опишите идею подробно..." required rows="3"
+                              class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-pink-500"></textarea>
+                </div>
+                <button type="submit" 
+                        class="w-full bg-pink-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-pink-600 transition duration-200">
+                    Сохранить идею
+                </button>
+            </form>
+        </div>
+
+        <!-- Список идей -->
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Существующие идеи (Всего: {{len .}})</h2>
+            <div class="space-y-4">
+                {{range .}}
+                <div class="border-b pb-4 last:border-b-0 last:pb-0 flex justify-between items-start">
+                    <div class="pr-4">
+                        <span class="inline-block bg-pink-100 text-pink-800 text-xs px-2 py-1 rounded font-semibold mb-1">
+                            {{.Category}}
+                        </span>
+                        <p class="text-gray-700 text-sm">{{.Description}}</p>
+                    </div>
+                    <form action="/admin/delete" method="POST" class="flex-shrink-0">
+                        <input type="hidden" name="id" value="{{.ID}}">
+                        <button type="submit" class="text-red-500 hover:text-red-700 text-sm font-semibold">
+                            Удалить
+                        </button>
+                    </form>
+                </div>
+                {{else}}
+                <p class="text-gray-500 text-center">Идей пока нет. Добавьте первую!</p>
+                {{end}}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+`
 
 type DateIdea struct {
 	gorm.Model
@@ -32,7 +98,6 @@ func initDB() {
 
 	log.Println("База данных успешно инициализирована!")
 
-	// Если база данных пустая, наполняем её всеми твоими классными идеями!
 	var count int64
 	DB.Model(&DateIdea{}).Count(&count)
 	if count == 0 {
@@ -52,6 +117,17 @@ func initDB() {
 
 func main() {
 	initDB()
+	http.HandleFunc("/admin", adminHandler)
+	http.HandleFunc("/admin/add", addIdeaHandler)
+	http.HandleFunc("/admin/delete", deleteIdeaHandler)
+
+	// Запускаем веб-сервер в отдельном потоке (горутине), чтобы он не мешал боту
+	go func() {
+		log.Println("Веб-сервер админки запущен на http://localhost:8080/admin")
+		if err := http.ListenAndServe(":8080", nil); err != nil {
+			log.Fatalf("Не удалось запустить веб-сервер: %v", err)
+		}
+	}()
 
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
 	if botToken == "" {
@@ -201,4 +277,55 @@ func main() {
 			log.Printf("Не удалось отправить сообщение: %v", err)
 		}
 	}
+}
+
+func adminHandler(w http.ResponseWriter, r *http.Request) {
+	var list []DateIdea
+
+	DB.Order("id desc").Find(&list)
+
+	tmpl, err := template.New("admin").Parse(adminHTML)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmpl.Execute(w, list)
+}
+
+func addIdeaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	category := r.FormValue("category")
+	description := r.FormValue("description")
+
+	if category != "" && description != "" {
+		newIdea := DateIdea{
+			Category:    category,
+			Description: description,
+		}
+		DB.Create(&newIdea)
+		log.Printf("[Админка] Добавлена новая идея: %s", category)
+	}
+
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func deleteIdeaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+
+	idStr := r.FormValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err == nil {
+		// Удаляем из SQLite по ID
+		DB.Delete(&DateIdea{}, id)
+		log.Printf("[Админка] Удалена идея с ID: %d", id)
+	}
+
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
