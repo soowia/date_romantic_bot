@@ -259,11 +259,8 @@ func main() {
 					continue
 				}
 
-				responseText = fmt.Sprintf("📋 **Ваши памятные даты (Всего: %d):**", len(events))
-				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
-				inlineKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
-
-				editMsg := tgbotapi.NewEditMessageTextAndMarkup(chatID, update.CallbackQuery.Message.MessageID, responseText, inlineKeyboard)
+				responseText = fmt.Sprintf("📋 **Ваши памятные даты (Всего: %d):**\n_Ниже отправлены карточки для управления_ 👇", len(events))
+				editMsg := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, responseText)
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
 
@@ -278,6 +275,12 @@ func main() {
 					bot.Send(msg)
 				}
 
+				menuMsg := tgbotapi.NewMessage(chatID, "Вы можете удалить ненужные даты или вернуться назад:")
+				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в главное меню", "go_to_main")
+				backKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
+				menuMsg.ReplyMarkup = backKeyboard
+
+				bot.Send(menuMsg)
 			case "go_to_main":
 				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
 
