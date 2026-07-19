@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -80,8 +83,24 @@ type DateIdea struct {
 	Category    string
 	Description string
 }
+type Event struct {
+	gorm.Model
+	UserID    int64 `gorm:"index"`
+	Title     string
+	EventDate string
+}
 
 var DB *gorm.DB
+
+const (
+	StateNone         = 0
+	StateWaitingTitle = 1
+	StateWaitingDate  = 2
+)
+
+var userStates = make(map[int64]int)
+
+var userTempTitles = make(map[int64]string)
 
 func initDB() {
 	var err error
@@ -91,7 +110,7 @@ func initDB() {
 		log.Fatalf("Не удалось подключиться к базе данных: %v", err)
 	}
 
-	err = DB.AutoMigrate(&DateIdea{})
+	err = DB.AutoMigrate(&DateIdea{}, &Event{})
 	if err != nil {
 		log.Fatalf("Ошибка миграции БД: %v", err)
 	}
@@ -121,7 +140,6 @@ func main() {
 	http.HandleFunc("/admin/add", addIdeaHandler)
 	http.HandleFunc("/admin/delete", deleteIdeaHandler)
 
-	// Запускаем веб-сервер в отдельном потоке (горутине), чтобы он не мешал боту
 	go func() {
 		log.Println("Веб-сервер админки запущен на http://localhost:8080/admin")
 		if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -175,7 +193,6 @@ func main() {
 			switch update.CallbackQuery.Data {
 			case "menu_ideas", "next_idea":
 				var randomIdea DateIdea
-
 				result := DB.Order("RANDOM()").First(&randomIdea)
 
 				if result.Error != nil {
@@ -200,16 +217,13 @@ func main() {
 					responseText,
 					inlineKeyboard,
 				)
-
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
-				continue // Переходим к следующему апдейту, не отправляя лишний текст
 
 			case "menu_remind":
-				responseText = "Тут мы настроим напоминания о годовщинах и днях рождения. Функция в разработке 📅"
-				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, responseText)
+				userStates[update.CallbackQuery.Message.Chat.ID] = StateWaitingTitle
+				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Введите название важного события 📝\n(например: Годовщина или День рождения любимой)")
 				bot.Send(msg)
-				continue
 
 			case "go_to_main":
 				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
@@ -227,54 +241,100 @@ func main() {
 					responseText,
 					mainKeyboard,
 				)
-
 				editMsg.ParseMode = "Markdown"
-
-				if _, err := bot.Send(editMsg); err != nil {
-					log.Printf("Ошибка при возврате в меню: %v", err)
-				}
-				continue
+				bot.Send(editMsg)
 			}
-		}
 
-		if update.Message == nil {
 			continue
 		}
 
-		log.Printf("[%s] написал: %s", update.Message.From.UserName, update.Message.Text)
+		if update.Message != nil {
+			chatID := update.Message.Chat.ID
+			state := userStates[chatID]
 
-		if update.Message.IsCommand() {
-			var replyText string
+			userName := update.Message.From.UserName
+			if userName == "" {
+				userName = update.Message.From.FirstName
+			}
+			log.Printf("[%s] написал: %s", userName, update.Message.Text)
 
-			switch update.Message.Command() {
-			case "start":
-				replyText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, replyText)
+			if update.Message.IsCommand() {
+				var replyText string
 
-				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
-				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+				switch update.Message.Command() {
+				case "start":
+					userStates[chatID] = StateNone
 
-				numericKeyboard := tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
-				)
+					replyText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
+					msg := tgbotapi.NewMessage(chatID, replyText)
 
-				msg.ReplyMarkup = numericKeyboard
+					btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
+					btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+
+					numericKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+						tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
+					)
+					msg.ReplyMarkup = numericKeyboard
+					bot.Send(msg)
+					continue
+
+				case "help":
+					replyText = "Доступные команды:\n/start - запустить бота\n/help - показать это меню"
+				default:
+					replyText = "Я не знаю такую команду 🤷‍♂️"
+				}
+
+				msg := tgbotapi.NewMessage(chatID, replyText)
 				bot.Send(msg)
 				continue
-			case "help":
-				replyText = "Доступные команды:\n/start - запустить бота\n/help - показать это меню"
-			default:
-				replyText = "Я не знаю такую команду 🤷‍♂️"
 			}
 
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, replyText)
-			bot.Send(msg)
-			continue
-		}
+			switch state {
+			case StateWaitingTitle:
+				userTempTitles[chatID] = update.Message.Text
+				userStates[chatID] = StateWaitingDate
 
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Ты написал обычный текст: "+update.Message.Text)
-		if _, err := bot.Send(msg); err != nil {
-			log.Printf("Не удалось отправить сообщение: %v", err)
+				msg := tgbotapi.NewMessage(chatID, "Отлично! Теперь введите дату в формате ДД.ММ 📅\n(например: 18.07)")
+				bot.Send(msg)
+
+			case StateWaitingDate:
+				title := userTempTitles[chatID]
+				dateStr := update.Message.Text
+
+				re := regexp.MustCompile(`^(0[1-9]|[12][0-9]|3[01])\.(0[1-9]|1[0-2])$`)
+				if !re.MatchString(dateStr) {
+					msg := tgbotapi.NewMessage(chatID, "❌ Неверный формат даты! \nПожалуйста, введите дату строго в формате ДД.ММ (например: 18.07 или 02.12).")
+					bot.Send(msg)
+					continue
+				}
+
+				currentYear := time.Now().Year()
+
+				fullDateStr := fmt.Sprintf("%s.%d", dateStr, currentYear)
+
+				_, err := time.Parse("02.01.2006", fullDateStr)
+				if err != nil {
+					msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Такой даты не существует в %d году! Проверьте количество дней в месяце или февраль. 😉", currentYear))
+					bot.Send(msg)
+					continue
+				}
+
+				newEvent := Event{
+					UserID:    chatID,
+					Title:     title,
+					EventDate: dateStr,
+				}
+				DB.Create(&newEvent)
+
+				userStates[chatID] = StateNone
+				delete(userTempTitles, chatID)
+
+				msg := tgbotapi.NewMessage(chatID, "🎉 Успешно! Я запомнил эту дату и обязательно напомню о ней.")
+				bot.Send(msg)
+			default:
+				msg := tgbotapi.NewMessage(chatID, "Ты написал обычный текст: "+update.Message.Text+"\nПожалуйста, пользуйся кнопками меню! 😉")
+				bot.Send(msg)
+			}
 		}
 	}
 }
