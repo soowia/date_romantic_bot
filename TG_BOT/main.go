@@ -99,7 +99,6 @@ const (
 )
 
 var userStates = make(map[int64]int)
-
 var userTempTitles = make(map[int64]string)
 
 func initDB() {
@@ -190,6 +189,25 @@ func main() {
 				log.Printf("Не удалось ответить на callback: %v", err)
 			}
 
+			// Проверка на динамическое удаление даты по её ID в базе
+			if len(update.CallbackQuery.Data) > 4 && update.CallbackQuery.Data[:4] == "del_" {
+				idStr := update.CallbackQuery.Data[4:]
+				eventID, err := strconv.Atoi(idStr)
+				if err == nil {
+					DB.Delete(&Event{}, eventID)
+					editMsg := tgbotapi.NewEditMessageText(
+						update.CallbackQuery.Message.Chat.ID,
+						update.CallbackQuery.Message.MessageID,
+						"🗑 _Дата успешно удалена из базы данных бота._",
+					)
+					editMsg.ParseMode = "Markdown"
+					bot.Send(editMsg)
+				} else {
+					log.Printf("Ошибка парсинга ID при удалении: %v", err)
+				}
+				continue
+			}
+
 			var responseText string
 			switch update.CallbackQuery.Data {
 			case "menu_ideas", "next_idea":
@@ -226,14 +244,50 @@ func main() {
 				msg := tgbotapi.NewMessage(update.CallbackQuery.Message.Chat.ID, "Введите название важного события 📝\n(например: Годовщина или День рождения любимой)")
 				bot.Send(msg)
 
+			case "menu_my_events":
+				chatID := update.CallbackQuery.Message.Chat.ID
+				var events []Event
+				DB.Where("user_id = ?", chatID).Find(&events)
+
+				if len(events) == 0 {
+					responseText = "У вас пока нет сохранённых дат. Самое время добавить первую! 😉"
+					btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
+					inlineKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
+
+					editMsg := tgbotapi.NewEditMessageTextAndMarkup(chatID, update.CallbackQuery.Message.MessageID, responseText, inlineKeyboard)
+					bot.Send(editMsg)
+					continue
+				}
+
+				responseText = fmt.Sprintf("📋 **Ваши памятные даты (Всего: %d):**", len(events))
+				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
+				inlineKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
+
+				editMsg := tgbotapi.NewEditMessageTextAndMarkup(chatID, update.CallbackQuery.Message.MessageID, responseText, inlineKeyboard)
+				editMsg.ParseMode = "Markdown"
+				bot.Send(editMsg)
+
+				for _, ev := range events {
+					eventText := fmt.Sprintf("🗓 **%s**\n📅 Дата: %s", ev.Title, ev.EventDate)
+					btnDelete := tgbotapi.NewInlineKeyboardButtonData("❌ Удалить", fmt.Sprintf("del_%d", ev.ID))
+					deleteKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnDelete))
+
+					msg := tgbotapi.NewMessage(chatID, eventText)
+					msg.ParseMode = "Markdown"
+					msg.ReplyMarkup = deleteKeyboard
+					bot.Send(msg)
+				}
+
 			case "go_to_main":
 				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
 
 				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
 				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+				btnMyEvents := tgbotapi.NewInlineKeyboardButtonData("Мои даты ❤️", "menu_my_events")
 
 				mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
+					tgbotapi.NewInlineKeyboardRow(btnMyEvents),
 				)
 
 				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
@@ -245,7 +299,6 @@ func main() {
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
 			}
-
 			continue
 		}
 
@@ -265,17 +318,18 @@ func main() {
 				switch update.Message.Command() {
 				case "start":
 					userStates[chatID] = StateNone
-
 					replyText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
 					msg := tgbotapi.NewMessage(chatID, replyText)
 
 					btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
 					btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
+					btnMyEvents := tgbotapi.NewInlineKeyboardButtonData("Мои даты ❤️", "menu_my_events")
 
-					numericKeyboard := tgbotapi.NewInlineKeyboardMarkup(
+					mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 						tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
+						tgbotapi.NewInlineKeyboardRow(btnMyEvents),
 					)
-					msg.ReplyMarkup = numericKeyboard
+					msg.ReplyMarkup = mainKeyboard
 					bot.Send(msg)
 					continue
 
@@ -310,7 +364,6 @@ func main() {
 				}
 
 				currentYear := time.Now().Year()
-
 				fullDateStr := fmt.Sprintf("%s.%d", dateStr, currentYear)
 
 				_, err := time.Parse("02.01.2006", fullDateStr)
@@ -342,7 +395,6 @@ func main() {
 
 func adminHandler(w http.ResponseWriter, r *http.Request) {
 	var list []DateIdea
-
 	DB.Order("id desc").Find(&list)
 
 	tmpl, err := template.New("admin").Parse(adminHTML)
@@ -383,20 +435,19 @@ func deleteIdeaHandler(w http.ResponseWriter, r *http.Request) {
 	idStr := r.FormValue("id")
 	id, err := strconv.Atoi(idStr)
 	if err == nil {
-		// Удаляем из SQLite по ID
 		DB.Delete(&DateIdea{}, id)
 		log.Printf("[Админка] Удалена идея с ID: %d", id)
 	}
 
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
+
 func startReminderScheduler(bot *tgbotapi.BotAPI) {
 	for {
 		log.Println("[Планировщик] Запущена проверка приближающихся дат...")
 
 		daysAhead := 3
 		targetDate := time.Now().AddDate(0, 0, daysAhead)
-
 		targetDateStr := targetDate.Format("02.01")
 
 		var upcomingEvents []Event
