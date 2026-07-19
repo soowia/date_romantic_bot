@@ -176,6 +176,7 @@ func main() {
 
 	bot.Debug = true
 	log.Printf("Авторизовались под аккаунтом %s", bot.Self.UserName)
+	go startReminderScheduler(bot)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
@@ -388,4 +389,51 @@ func deleteIdeaHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+func startReminderScheduler(bot *tgbotapi.BotAPI) {
+	for {
+		log.Println("[Планировщик] Запущена проверка приближающихся дат...")
+
+		daysAhead := 3
+		targetDate := time.Now().AddDate(0, 0, daysAhead)
+
+		targetDateStr := targetDate.Format("02.01")
+
+		var upcomingEvents []Event
+		result := DB.Where("event_date = ?", targetDateStr).Find(&upcomingEvents)
+
+		if result.Error != nil {
+			log.Printf("[Планировщик] Ошибка при запросе к БД: %v", result.Error)
+		} else if len(upcomingEvents) > 0 {
+			log.Printf("[Планировщик] Найдено событий: %d. Отправляем напоминания...", len(upcomingEvents))
+
+			for _, event := range upcomingEvents {
+				var randomIdea DateIdea
+				ideaResult := DB.Order("RANDOM()").First(&randomIdea)
+
+				var reminderText string
+				if ideaResult.Error == nil {
+					reminderText = fmt.Sprintf(
+						"🔔 **Напоминание!**\n\nЧерез %d дня состоится событие: **%s** (%s) 🎉\n\nПора готовиться! Вот вам случайная идея для свидания под этот повод:\n\n📌 **%s**\n%s",
+						daysAhead, event.Title, event.EventDate, randomIdea.Category, randomIdea.Description,
+					)
+				} else {
+					reminderText = fmt.Sprintf(
+						"🔔 **Напоминание!**\n\nЧерез %d дня состоится событие: **%s** (%s) 🎉\nПора планировать свидание!",
+						daysAhead, event.Title, event.EventDate,
+					)
+				}
+
+				msg := tgbotapi.NewMessage(event.UserID, reminderText)
+				msg.ParseMode = "Markdown"
+				if _, err := bot.Send(msg); err != nil {
+					log.Printf("[Планировщик] Не удалось отправить пуш для UserID %d: %v", event.UserID, err)
+				}
+			}
+		} else {
+			log.Println("[Планировщик] На эту дату важных событий не найдено.")
+		}
+
+		time.Sleep(12 * time.Hour)
+	}
 }
