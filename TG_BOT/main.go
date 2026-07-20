@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"time"
 
+	"bytes"
+	"encoding/json"
+
 	"github.com/glebarez/sqlite"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"gorm.io/gorm"
@@ -298,10 +301,12 @@ func main() {
 				btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
 				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
 				btnMyEvents := tgbotapi.NewInlineKeyboardButtonData("Мои даты ❤️", "menu_my_events")
+				btnAI := tgbotapi.NewInlineKeyboardButtonData("🪄 Сгенерировать с ИИ", "get_ai_idea")
 
 				mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
 					tgbotapi.NewInlineKeyboardRow(btnMyEvents),
+					tgbotapi.NewInlineKeyboardRow(btnAI),
 				)
 
 				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
@@ -312,8 +317,23 @@ func main() {
 				)
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
+			case "get_ai_idea":
+				chatID := update.CallbackQuery.Message.Chat.ID
+				waitMsg := tgbotapi.NewMessage(chatID, "🪄 *Нейросеть генерирует уникальную идею... Пожалуйста, подождите пара секунд...*")
+				waitMsg.ParseMode = "Markdown"
+				sentMsg, _ := bot.Send(waitMsg)
+				aiIdeaText := GenerateAIIdea()
+				delMsg := tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID)
+				bot.Send(delMsg)
+				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
+				msg := tgbotapi.NewMessage(chatID, aiIdeaText)
+				msg.ParseMode = "Markdown"
+				msg.ReplyMarkup = keyboard
+				bot.Send(msg)
 			}
 			continue
+
 		}
 
 		if update.Message != nil {
@@ -517,4 +537,66 @@ func startReminderScheduler(bot *tgbotapi.BotAPI) {
 
 		time.Sleep(12 * time.Hour)
 	}
+}
+func GenerateAIIdea() string {
+	apiKey := os.Getenv("AI_API_KEY")
+
+	if apiKey == "" {
+		return "🪄 **Идея от ИИ:**\n\nУстройте «Вечер воспоминаний»: отключите телефоны, зажгите свечи, достаньте старые фотографии или включите видео из совместных поездок и приготовьте блюдо, которое вы впервые ели вместе."
+	}
+
+	type Message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type Request struct {
+		Model    string    `json:"model"`
+		Messages []Message `json:"messages"`
+	}
+	type Response struct {
+		Choices []struct {
+			Message Message `json:"message"`
+		} `json:"choices"`
+	}
+
+	reqBody := Request{
+		Model: "llama-3.1-8b-instant",
+		Messages: []Message{
+			{
+				Role:    "system",
+				Content: "Ты эксперт по романтическим свиданиям. Придумай 1 оригинальную, уютную и интересную идею для свидания на русском языке. Ответ должен быть кратким (до 4-5 предложений), с эмодзи и конкретным планом действий.",
+			},
+			{
+				Role:    "user",
+				Content: "Придумай оригинальную идею для свидания.",
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "Не удалось сформировать запрос к ИИ."
+	}
+
+	req, err := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "Ошибка создания HTTP-запроса."
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "Не удалось связаться с сервером ИИ."
+	}
+	defer resp.Body.Close()
+
+	var aiResp Response
+	if err := json.NewDecoder(resp.Body).Decode(&aiResp); err != nil || len(aiResp.Choices) == 0 {
+		return "Ошибка при обработке ответа от ИИ."
+	}
+
+	return "🪄 **Уникальная идея от ИИ:**\n\n" + aiResp.Choices[0].Message.Content
 }
