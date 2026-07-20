@@ -263,9 +263,20 @@ func main() {
 				editMsg := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, responseText)
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
-
 				for _, ev := range events {
-					eventText := fmt.Sprintf("🗓 **%s**\n📅 Дата: %s", ev.Title, ev.EventDate)
+					leftDays := daysUntil(ev.EventDate)
+
+					var statusText string
+					if leftDays == 0 {
+						statusText = "🎉 **Прямо сегодня! Не забудь поздравить!**"
+					} else if leftDays == 1 {
+						statusText = "⏳ *Остался всего 1 день!*"
+					} else {
+						statusText = fmt.Sprintf("⏳ *Осталось дней: %d*", leftDays)
+					}
+
+					eventText := fmt.Sprintf("🗓 **%s**\n📅 Дата: %s\n%s", ev.Title, ev.EventDate, statusText)
+
 					btnDelete := tgbotapi.NewInlineKeyboardButtonData("❌ Удалить", fmt.Sprintf("del_%d", ev.ID))
 					deleteKeyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnDelete))
 
@@ -445,6 +456,22 @@ func deleteIdeaHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+func daysUntil(eventDateStr string) int {
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+
+	var day, month int
+	fmt.Sscanf(eventDateStr, "%d.%d", &day, &month)
+
+	eventThisYear := time.Date(today.Year(), time.Month(month), day, 0, 0, 0, 0, now.Location())
+
+	if eventThisYear.Before(today) {
+		eventNextYear := time.Date(today.Year()+1, time.Month(month), day, 0, 0, 0, 0, now.Location())
+		return int(eventNextYear.Sub(today).Hours() / 24)
+	}
+
+	return int(eventThisYear.Sub(today).Hours() / 24)
+}
 func startReminderScheduler(bot *tgbotapi.BotAPI) {
 	for {
 		log.Println("[Планировщик] Запущена проверка приближающихся дат...")
