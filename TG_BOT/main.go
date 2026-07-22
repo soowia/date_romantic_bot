@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+
 	"html/template"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
-
-	"bytes"
-	"encoding/json"
 
 	"github.com/glebarez/sqlite"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -86,14 +89,25 @@ type DateIdea struct {
 	Category    string
 	Description string
 }
+
+type User struct {
+	ID         uint   `gorm:"primaryKey"`
+	TelegramID int64  `gorm:"uniqueIndex;not null"`
+	PairID     string `gorm:"index"`
+	PartnerID  int64
+	InviteCode string `gorm:"index"`
+}
+
 type Event struct {
-	gorm.Model
-	UserID    int64 `gorm:"index"`
+	ID        uint   `gorm:"primaryKey"`
+	UserID    int64  `gorm:"index"`
+	PairID    string `gorm:"index"`
 	Title     string
 	EventDate string
 }
 
 var DB *gorm.DB
+var adminTmpl *template.Template
 
 const (
 	StateNone         = 0
@@ -112,7 +126,7 @@ func initDB() {
 		log.Fatalf("Не удалось подключиться к базе данных: %v", err)
 	}
 
-	err = DB.AutoMigrate(&DateIdea{}, &Event{})
+	err = DB.AutoMigrate(&DateIdea{}, &Event{}, &User{})
 	if err != nil {
 		log.Fatalf("Ошибка миграции БД: %v", err)
 	}
@@ -136,8 +150,21 @@ func initDB() {
 	}
 }
 
+func getOrCreateUser(telegramID int64) User {
+	var user User
+	err := DB.Where("telegram_id = ?", telegramID).First(&user).Error
+	if err != nil {
+		user = User{TelegramID: telegramID}
+		DB.Create(&user)
+	}
+	return user
+}
+
 func main() {
 	initDB()
+
+	adminTmpl = template.Must(template.New("admin").Parse(adminHTML))
+
 	http.HandleFunc("/admin", adminHandler)
 	http.HandleFunc("/admin/add", addIdeaHandler)
 	http.HandleFunc("/admin/delete", deleteIdeaHandler)
@@ -176,7 +203,7 @@ func main() {
 	}
 	log.Println("Нижнее меню команд успешно настроено!")
 
-	bot.Debug = true
+	bot.Debug = false
 	log.Printf("Авторизовались под аккаунтом %s", bot.Self.UserName)
 	go startReminderScheduler(bot)
 
@@ -192,7 +219,6 @@ func main() {
 				log.Printf("Не удалось ответить на callback: %v", err)
 			}
 
-			// Проверка на динамическое удаление даты по её ID в базе
 			if len(update.CallbackQuery.Data) > 4 && update.CallbackQuery.Data[:4] == "del_" {
 				idStr := update.CallbackQuery.Data[4:]
 				eventID, err := strconv.Atoi(idStr)
@@ -250,8 +276,12 @@ func main() {
 			case "menu_my_events":
 				chatID := update.CallbackQuery.Message.Chat.ID
 				var events []Event
-				DB.Where("user_id = ?", chatID).Find(&events)
-
+				user := getOrCreateUser(chatID)
+				if user.PairID != "" {
+					DB.Where("pair_id = ? OR user_id = ?", user.PairID, chatID).Find(&events)
+				} else {
+					DB.Where("user_id = ?", chatID).Find(&events)
+				}
 				if len(events) == 0 {
 					responseText = "У вас пока нет сохранённых дат. Самое время добавить первую! 😉"
 					btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
@@ -295,6 +325,7 @@ func main() {
 				menuMsg.ReplyMarkup = backKeyboard
 
 				bot.Send(menuMsg)
+
 			case "go_to_main":
 				responseText = "Привет! Добро пожаловать в Date Romantic Bot 👩‍❤️‍👨\n\nЯ помогу тебе не забыть про важные даты и подкину крутые идеи для свиданий!"
 
@@ -302,11 +333,13 @@ func main() {
 				btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
 				btnMyEvents := tgbotapi.NewInlineKeyboardButtonData("Мои даты ❤️", "menu_my_events")
 				btnAI := tgbotapi.NewInlineKeyboardButtonData("🪄 Сгенерировать с ИИ", "get_ai_idea")
+				btnPair := tgbotapi.NewInlineKeyboardButtonData("👥 Парный режим", "menu_pair")
 
 				mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 					tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
 					tgbotapi.NewInlineKeyboardRow(btnMyEvents),
 					tgbotapi.NewInlineKeyboardRow(btnAI),
+					tgbotapi.NewInlineKeyboardRow(btnPair),
 				)
 
 				editMsg := tgbotapi.NewEditMessageTextAndMarkup(
@@ -317,28 +350,90 @@ func main() {
 				)
 				editMsg.ParseMode = "Markdown"
 				bot.Send(editMsg)
+
 			case "get_ai_idea":
 				chatID := update.CallbackQuery.Message.Chat.ID
-				waitMsg := tgbotapi.NewMessage(chatID, "🪄 *Нейросеть генерирует уникальную идею... Пожалуйста, подождите пара секунд...*")
+				waitMsg := tgbotapi.NewMessage(chatID, "🪄 *Нейросеть генерирует уникальную идею... Пожалуйста, подождите пару секунд...*")
 				waitMsg.ParseMode = "Markdown"
 				sentMsg, _ := bot.Send(waitMsg)
 				aiIdeaText := GenerateAIIdea()
 				delMsg := tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID)
 				bot.Send(delMsg)
+
 				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
 				keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
 				msg := tgbotapi.NewMessage(chatID, aiIdeaText)
 				msg.ParseMode = "Markdown"
 				msg.ReplyMarkup = keyboard
 				bot.Send(msg)
+
+			case "menu_pair":
+				chatID := update.CallbackQuery.Message.Chat.ID
+				user := getOrCreateUser(chatID)
+				if user.PairID != "" && user.PartnerID != 0 {
+					responseText = fmt.Sprintf("❤️ **Вы уже состоите в паре!**\n\nID вашей пары: `%s`\nВсе ваши памятные даты синхронизированы.", user.PairID)
+				} else {
+					if user.InviteCode == "" {
+						user.InviteCode = generateInviteCode()
+						user.PairID = user.InviteCode
+						DB.Save(&user)
+					}
+					botUsername := bot.Self.UserName
+					inviteLink := fmt.Sprintf("https://t.me/%s?start=%s", botUsername, user.InviteCode)
+					responseText = fmt.Sprintf("👩‍❤️‍👨 **Парный режим**\n\nОтправьте этот код или ссылку вашей второй половинке, чтобы объединить ваши памятные даты:\n\n🔑 Ваш код: `%s`\n🔗 Ссылка: %s\n\n*Как подключиться вашему партнеру:*\nПерейти по ссылке или отправить команду:\n`/pair %s`", user.InviteCode, inviteLink, user.InviteCode)
+				}
+				btnBack := tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в меню", "go_to_main")
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(btnBack))
+				editMsg := tgbotapi.NewEditMessageTextAndMarkup(chatID, update.CallbackQuery.Message.MessageID, responseText, keyboard)
+				editMsg.ParseMode = "Markdown"
+				bot.Send(editMsg)
 			}
 			continue
-
 		}
 
 		if update.Message != nil {
 			chatID := update.Message.Chat.ID
 			state := userStates[chatID]
+			text := strings.TrimSpace(update.Message.Text)
+
+			var code string
+			if strings.HasPrefix(text, "/start ") {
+				args := strings.TrimSpace(update.Message.CommandArguments())
+				if strings.HasPrefix(args, "PAIR-") {
+					code = args
+				}
+			} else if strings.HasPrefix(text, "/pair ") {
+				code = strings.TrimSpace(strings.TrimPrefix(text, "/pair "))
+			}
+
+			if code != "" {
+				var hostUser User
+				err := DB.Where("invite_code = ?", code).First(&hostUser).Error
+				if err != nil || hostUser.TelegramID == chatID {
+					msg := tgbotapi.NewMessage(chatID, "❌ **Недействительный код приглашения** или вы пытаетесь подключиться к самому себе.")
+					msg.ParseMode = "Markdown"
+					bot.Send(msg)
+					continue
+				}
+				currentUser := getOrCreateUser(chatID)
+				currentUser.PairID = hostUser.PairID
+				currentUser.PartnerID = hostUser.TelegramID
+				DB.Save(&currentUser)
+
+				hostUser.PartnerID = chatID
+				DB.Save(&hostUser)
+
+				DB.Model(&Event{}).Where("user_id = ?", chatID).Update("pair_id", hostUser.PairID)
+
+				msgToCurrent := tgbotapi.NewMessage(chatID, "🎉 **Ура! Вы успешно связали аккаунты!**\n\nТеперь все памятные даты у вас с партнером общие ❤️")
+				msgToCurrent.ParseMode = "Markdown"
+				bot.Send(msgToCurrent)
+
+				msgToHost := tgbotapi.NewMessage(hostUser.TelegramID, "🎉 **Ваша вторая половинка подключилась!**\n\nТеперь ваши памятные даты синхронизированы ❤️")
+				msgToHost.ParseMode = "Markdown"
+				bot.Send(msgToHost)
+				continue
+			}
 
 			userName := update.Message.From.UserName
 			if userName == "" {
@@ -358,17 +453,21 @@ func main() {
 					btnIdeas := tgbotapi.NewInlineKeyboardButtonData("Идеи для свиданий 💡", "menu_ideas")
 					btnRemind := tgbotapi.NewInlineKeyboardButtonData("Напомнить о дате 📅", "menu_remind")
 					btnMyEvents := tgbotapi.NewInlineKeyboardButtonData("Мои даты ❤️", "menu_my_events")
+					btnAI := tgbotapi.NewInlineKeyboardButtonData("🪄 Сгенерировать с ИИ", "get_ai_idea")
+					btnPair := tgbotapi.NewInlineKeyboardButtonData("👥 Парный режим", "menu_pair")
 
 					mainKeyboard := tgbotapi.NewInlineKeyboardMarkup(
 						tgbotapi.NewInlineKeyboardRow(btnIdeas, btnRemind),
 						tgbotapi.NewInlineKeyboardRow(btnMyEvents),
+						tgbotapi.NewInlineKeyboardRow(btnAI),
+						tgbotapi.NewInlineKeyboardRow(btnPair),
 					)
 					msg.ReplyMarkup = mainKeyboard
 					bot.Send(msg)
 					continue
 
 				case "help":
-					replyText = "Доступные команды:\n/start - запустить бота\n/help - показать это меню"
+					replyText = "Доступные команды:\n/start - запустить бота\n/help - показать это меню\n/pair CODE - подключиться к партнеру"
 				default:
 					replyText = "Я не знаю такую команду 🤷‍♂️"
 				}
@@ -406,9 +505,10 @@ func main() {
 					bot.Send(msg)
 					continue
 				}
-
+				user := getOrCreateUser(chatID)
 				newEvent := Event{
 					UserID:    chatID,
+					PairID:    user.PairID,
 					Title:     title,
 					EventDate: dateStr,
 				}
@@ -431,12 +531,9 @@ func adminHandler(w http.ResponseWriter, r *http.Request) {
 	var list []DateIdea
 	DB.Order("id desc").Find(&list)
 
-	tmpl, err := template.New("admin").Parse(adminHTML)
-	if err != nil {
+	if err := adminTmpl.Execute(w, list); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	tmpl.Execute(w, list)
 }
 
 func addIdeaHandler(w http.ResponseWriter, r *http.Request) {
@@ -492,6 +589,7 @@ func daysUntil(eventDateStr string) int {
 
 	return int(eventThisYear.Sub(today).Hours() / 24)
 }
+
 func startReminderScheduler(bot *tgbotapi.BotAPI) {
 	for {
 		log.Println("[Планировщик] Запущена проверка приближающихся дат...")
@@ -525,10 +623,22 @@ func startReminderScheduler(bot *tgbotapi.BotAPI) {
 					)
 				}
 
+				// Рассылка автору события
 				msg := tgbotapi.NewMessage(event.UserID, reminderText)
 				msg.ParseMode = "Markdown"
 				if _, err := bot.Send(msg); err != nil {
 					log.Printf("[Планировщик] Не удалось отправить пуш для UserID %d: %v", event.UserID, err)
+				}
+
+				// Если есть PairID, рассылаем второму участнику пары
+				if event.PairID != "" {
+					var partners []User
+					DB.Where("pair_id = ? AND telegram_id != ?", event.PairID, event.UserID).Find(&partners)
+					for _, partner := range partners {
+						msgPartner := tgbotapi.NewMessage(partner.TelegramID, reminderText)
+						msgPartner.ParseMode = "Markdown"
+						bot.Send(msgPartner)
+					}
 				}
 			}
 		} else {
@@ -538,6 +648,7 @@ func startReminderScheduler(bot *tgbotapi.BotAPI) {
 		time.Sleep(12 * time.Hour)
 	}
 }
+
 func GenerateAIIdea() string {
 	apiKey := os.Getenv("AI_API_KEY")
 
@@ -599,4 +710,12 @@ func GenerateAIIdea() string {
 	}
 
 	return "🪄 **Уникальная идея от ИИ:**\n\n" + aiResp.Choices[0].Message.Content
+}
+
+func generateInviteCode() string {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return "PAIR12"
+	}
+	return "PAIR-" + hex.EncodeToString(b)
 }
